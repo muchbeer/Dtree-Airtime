@@ -3,11 +3,54 @@ import express from "express";
 import bodyParser from "body-parser";
 import pg from "pg";
 import bcrypt from "bcrypt";
-import 'dotenv/config'
+import 'dotenv/config';
+import session from "express-session";
+import passport from "passport";
+import flash from "express-flash";
+import initialize from './passport-config.js'
+import methodOverride from "method-override";
+
+
+// const initializePassport = require('./passport-config')
+initialize(passport, 
+   async email => {
+
+    try {
+
+        const sql = "SELECT * FROM dtree_users WHERE LOWER(email) = $1"
+        const values = [email]
+
+        const data = await db.query( sql, values);
+
+        if (data.rowCount == 0) return false; 
+        return data.rows[0];
+    
+        // const sql_old = "SELECT * FROM dtree_users WHERE LOWER(email) = $1 AND LOWER(pass) = $2;"
+       
+    } catch (error) {
+        console.log(`Error outside catch is now : ${error}`)
+       return false; 
+    }
+
+}, 
+async (id) => {
+    try {
+        const sql = "SELECT * FROM dtree_users WHERE LOWER(id) = $1;"
+        const values = [id]
+        const data = await db.query( sql, values);
+
+        if (data.rowCount == 0) return false; 
+        return data.rows[0];
+
+    } catch (error) {
+       return false; 
+    }
+ 
+})
 
 const app = express();
 const port = 3000;
-const salt = 10;
+
 
 const db = new pg.Client( { 
 	user: process.env.DB_USER,
@@ -26,6 +69,19 @@ app.use(bodyParser.urlencoded( {
     extended: true
 } ));
 
+app.use(flash());
+app.use(session( {
+    secret: process.env.SESSION_SECRET,
+    resave: false,
+    saveUninitialized: false
+}))
+
+app.use(passport.initialize());
+app.use(passport.session());
+
+app.use(methodOverride('_method'))
+
+
 async function checkDB() {
     const result = await db.query("SELECT * FROM dtree_users");
     const record = result.rows;
@@ -41,56 +97,22 @@ app.get("/", (req, res) => {
     res.render("home");
 });
 
-app.get("/login", (req, res) => {
+app.get("/login", checkNotAuthenticated, (req, res) => {
         checkDB();
     res.render("login");
 });
 
-app.post("/login",  async (req, res) => {
-    const user = req.body.username;
-    const password = req.body.password;
+app.post("/login",  passport.authenticate('local', {
+    successRedirect: "/secrets",
+    failureRedirect: "/login",
+    failureFlash: true
+}))
 
-    try {
-
-        const sql = "SELECT * FROM dtree_users WHERE LOWER(email) = $1;"
-        const values = [user]
-        
-        // const sql_old = "SELECT * FROM dtree_users WHERE LOWER(email) = $1 AND LOWER(pass) = $2;"
-          db.query( sql , values, async (err, data) => {
-            if(err) {
-                console.log(err)
-               return res.render("login");
-            } 
-
-            if(record.length > 0) {
-                bcrypt.compare(password.toString(), record[0].pass, (err, response) => {
-                    console.log(`Entered bcrypt and data is  : ${record[0].pass}`);
-                    if(err) {
-                        console.log(`Output error with err inside bcrypt is : ${err}`);
-                       return res.redirect("/login");
-                    } else if (response) {
-                        console.log(`Login successful, the data output is : ${response}`);
-                      return  res.render("secrets");
-                    } else {
-                        console.log( `The response is : ${response}`)
-                      return  res.redirect("/login");
-                    }   
-                })
-                
-            }
-        });
-
-        
-    } catch(err) {
-        console.log(err);
-    }
-})
-
-app.get("/register", (req, res) => {
+app.get("/register", checkNotAuthenticated , (req, res) => {
     res.render("register")
 });
 
-app.post("/register", async (req, res) => {
+app.post("/register", checkNotAuthenticated, async (req, res) => {
 
     const first = req.body.firstname;
     const last = req.body.lastname;
@@ -98,9 +120,9 @@ app.post("/register", async (req, res) => {
     const pass = req.body.password;
     
     try {
-        const sql = "INSERT INTO dtree_users (first_name, last_name, email, pass) VALUES ($1, $2, $3, $4)";  
+        const sql = "INSERT INTO dtree_users (first_name, last_name, email, pass) VALUES ($1, $2, $3, $4)"  
 
-        bcrypt.hash(pass.toString(), process.env.HASH_SALT, async (err, hash) => {
+        bcrypt.hash(pass.toString(), parseInt(process.env.HASH_SALT) , async (err, hash) => {
             if(err) {
                 console.log(err);
                 res.render("register");
@@ -114,14 +136,37 @@ app.post("/register", async (req, res) => {
         res.redirect("/login");
       } catch (err) {
         console.log(err);
+        res.redirect('/register')
       }
-    res.render("register");
 });
 
-app.get("/secrets", (req, res) => {
+app.get("/secrets", checkAuthenticated, (req, res) => {
+    const usersigned = req.user.name;
+    console.log(`The user signed is : ${usersigned}`)
     res.render("secrets");
 });
 
+//Logout function
+app.post('/logout', function(req, res, next) {
+    req.logout(function(err) {
+      if (err) { return next(err); }
+      res.redirect('/secrets');
+    });
+  });
+
+function checkAuthenticated(req, res, next) {
+    if(req.isAuthenticated()) {
+        return next()
+    }
+    res.redirect('/login')
+}
+
+function checkNotAuthenticated(req, res, next) {
+    if(req.isAuthenticated()) {
+       return res.redirect("/secrets")
+    }
+    next()
+}
 app.listen(port, () => {
     console.log(`The Server started on port ${port}`);
 })
